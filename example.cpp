@@ -1,57 +1,49 @@
-#include "./headers/propagate_intervals.h"
-#include "../flowstar-template/Continuous.h"
+#include "../flowstar/Continuous.h"
+#include "../Bernstein_Polynomial_Approximation/bernstein_poly_approx.h"
 
 using namespace std;
 using namespace flowstar;
 
-datatype offset_in_constraint_comb = constr_comb_offset;
-// So the above data assumes, that this number is
-// same for all the networks you have in the setting,
-// and also all the networks are single output network
-// with the first one giving the output
 
 int main()
 {
-	/*
-	 * Declaration of the state variables.
-	 * The first one should always be the local time variable which can be
-	 * viewed as a preserved variable. It is only used internally by the library.
-	 */
+	// Declaration of the state variables.
 	unsigned int numVars = 3;
 
-	int x_id = stateVars.declareVar("x");
-	int y_id = stateVars.declareVar("y");
+	int d_err_id = stateVars.declareVar("d_err");
+	int theta_err_id = stateVars.declareVar("t_err");
 	int u_id = stateVars.declareVar("u");
 
 	int domainDim = numVars + 1;
 
 
-	/*
-	 * Define the first continuous dynamics.
-	 */
-	Expression_AST<Real> deriv_x("y - x^3", stateVars);
-	Expression_AST<Real> deriv_y("u", stateVars);
-	Expression_AST<Real> deriv_u("0", stateVars);
+	// Define the continuous dynamics.
+//	Expression_AST<Real> deriv_d_err("-sin(0.62831853071 - t_err)*0.58778525229 + cos(0.62831853071 - t_err)*0.80901699437");   // theta_r = pi/5
+	Expression_AST<Real> deriv_d_err("cos(0 - t_err)");  // theta_r = 0
+	Expression_AST<Real> deriv_theta_err("-u");
+	Expression_AST<Real> deriv_u("0");
 
 	vector<Expression_AST<Real> > ode_rhs(numVars);
-	ode_rhs[x_id] = deriv_x;
-	ode_rhs[y_id] = deriv_y;
+	ode_rhs[d_err_id] = deriv_d_err;
+	ode_rhs[theta_err_id] = deriv_theta_err;
 	ode_rhs[u_id] = deriv_u;
 
 	Deterministic_Continuous_Dynamics dynamics(ode_rhs);
 
 
 
-	/*
-	 * Specify the parameters for reachability computation.
-	 */
+	
+	// Specify the parameters for reachability computation.
+	
 	Computational_Setting setting;
 
-	// stepsize and order
-	setting.setFixedStepsize(0.02, 4);
+	unsigned int order = 4;
 
-	// time horizon
-	setting.setTime(0.2);
+	// stepsize and order for reachability analysis
+	setting.setFixedStepsize(0.02, order);
+
+	// time horizon for a single control step
+	setting.setTime(1);
 
 	// cutoff threshold
 	setting.setCutoffThreshold(1e-10);
@@ -69,20 +61,11 @@ int main()
 
 	setting.prepare();
 
-
-
-
-	// Simple range propagation
-	char controller_file[] = "../systems_with_networks/Ex_12/neural_network_controller" ;
-	network_handler system_network(controller_file);
-
-
-
 	/*
 	 * Initial set can be a box which is represented by a vector of intervals.
 	 * The i-th component denotes the initial set of the i-th state variable.
 	 */
-	Interval init_x(0.7,0.9), init_y(0.7,0.9), init_u;
+	Interval init_x(0,0.01), init_y(0,0.01), init_u(0);
 	std::vector<Interval> X0;
 	X0.push_back(init_x);
 	X0.push_back(init_y);
@@ -100,53 +83,43 @@ int main()
 	// result of the reachability computation
 	Result_of_Reachability result;
 
+	// define the neural network controller
+	char const *module_name = "dubins_controller_poly_approx";
+	char const *function_name1 = "dubins_poly_controller";
+	char const *function_name2 = "poly_approx_error";
+	char const *degree_bound = "[3, 3]";
+	char const *lips = "2.011";
 
-	for(int k=0; k<30; ++k)
+	// perform 20 control steps
+	for(int iter=0; iter<20; ++iter)
 	{
-		std::vector<Interval> NN_input;
-		initial_set.intEvalNormal(NN_input, setting.tm_setting.step_exp_table, setting.tm_setting.cutoff_threshold);
+		vector<Interval> box;
+		initial_set.intEval(box, order, setting.tm_setting.cutoff_threshold);
 
-		vector< vector< datatype > > input_interval(2, vector< datatype >(2,0));
-		input_interval[0][0] = NN_input[0].inf();
-		input_interval[0][1] = NN_input[0].sup();
+		string strBox = "[" + box[0].toString() + "," + box[1].toString() + "]";
 
-		input_interval[1][0] = NN_input[1].inf();
-		input_interval[1][1] = NN_input[1].sup();
+	
+		string strExpU = bernsteinPolyApproximation(module_name, function_name1, degree_bound, strBox.c_str(), lips);
+		double err = stod(bernsteinPolyApproximation(module_name, function_name2, degree_bound, strBox.c_str(), lips));
 
-		printf("[%lf, %lf], \t [%lf, %lf]\n", input_interval[0][0], input_interval[0][1],
-				input_interval[1][0], input_interval[1][1]);
+		Expression_AST<Real> exp_u(strExpU);
 
-		vector< vector< datatype > > input_constraints;
-		create_constraint_from_interval(input_constraints, input_interval);
+		TaylorModel<Real> tm_u;
+		exp_u.evaluate(tm_u, initial_set.tmvPre.tms, order, initial_set.domain, setting.tm_setting.cutoff_threshold, setting.g_setting);
 
-		vector< datatype > output_range(2,0);
-	 	system_network.return_interval_output(input_constraints, output_range, 1);
+		tm_u.remainder.bloat(err);
+	
+		initial_set.tmvPre.tms[u_id] = tm_u;
 
-	 	cout << "output_range = [" << output_range[0] << " , " << output_range[1] << " ]" << endl;
+		dynamics.reach(result, setting, initial_set, unsafeSet);
 
-	 	Interval u_range(output_range[0], output_range[1]);
-	 	u_range -= 4;			// -4
-
-	 	Real c;
-	 	u_range.remove_midpoint(c);
-	 	TaylorModel<Real> tm_u(c, domainDim);
-	 	tm_u.remainder = u_range;
-
-	 	initial_set.tmvPre.tms[2] = tm_u;
-
-		printf("Step %d\n", k);
-
-
-		int res = dynamics.reach(result, setting, initial_set, unsafeSet);
-
-		if(res == COMPLETED_SAFE || res == COMPLETED_UNSAFE || res == COMPLETED_UNKNOWN)
+		if(result.status == COMPLETED_SAFE || result.status == COMPLETED_UNSAFE || result.status == COMPLETED_UNKNOWN)
 		{
 			initial_set = result.fp_end_of_time;
 		}
 		else
 		{
 			printf("Terminated due to too large overestimation.\n");
-			break;
 		}
 	}
 
@@ -155,10 +128,18 @@ int main()
 	result.transformToTaylorModels(setting);
 
 	Plot_Setting plot_setting;
-	plot_setting.setOutputDims(x_id, y_id);
+	plot_setting.setOutputDims(d_err_id, theta_err_id);
+
+	mkres = mkdir("./outputs", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+	if(mkres < 0 && errno != EEXIST)
+	{
+		printf("Can not create the directory for images.\n");
+		exit(1);
+	}
 
 	// you need to create a subdir named outputs
-	plot_setting.plot_2D_interval_MATLAB("Ex_12_INT", result);
+	// the file name is example.m and it is put in the subdir outputs
+	plot_setting.plot_2D_interval_MATLAB("example", result);
 
 	return 0;
 }
