@@ -65,10 +65,10 @@ int main()
 	 * Initial set can be a box which is represented by a vector of intervals.
 	 * The i-th component denotes the initial set of the i-th state variable.
 	 */
-	Interval init_x(0,0.01), init_y(0,0.01), init_u(0);
+	Interval init_d_err(0,0.01), init_t_err(0,0.01), init_u(0);
 	std::vector<Interval> X0;
-	X0.push_back(init_x);
-	X0.push_back(init_y);
+	X0.push_back(init_d_err);
+	X0.push_back(init_t_err);
 	X0.push_back(init_u);
 
 
@@ -87,17 +87,38 @@ int main()
 	char const *module_name = "dubins_controller_poly_approx";
 	char const *function_name1 = "dubins_poly_controller";
 	char const *function_name2 = "poly_approx_error";
-	char const *degree_bound = "[3, 3]";
-	char const *lips = "2.011";
+	char const *degree_bound = "[2, 2]";
+	char const *lips = "1.5391113341478";
+	
+	double pi = 3.14159;
+	double factor = 2*pi;
 
 	// perform 20 control steps
-	for(int iter=0; iter<20; ++iter)
+	for(int iter=0; iter<5; ++iter)
 	{
 		vector<Interval> box;
 		initial_set.intEval(box, order, setting.tm_setting.cutoff_threshold);
+		
+		if(box[1].sup() > 0)
+		{
+			for(; box[1].sup() > pi;)
+			{
+				box[1].setSup(box[1].sup() - factor);
+				box[1].setInf(box[1].inf() - factor);
+			}
+		}
+		else
+		{
+			for(; box[1].inf() < -pi;)
+			{
+				box[1].setSup(box[1].sup() + factor);
+				box[1].setInf(box[1].inf() + factor);
+			}
+		}
+		
 
 		string strBox = "[" + box[0].toString() + "," + box[1].toString() + "]";
-
+//cout << strBox <<endl;
 	
 		string strExpU = bernsteinPolyApproximation(module_name, function_name1, degree_bound, strBox.c_str(), lips);
 		double err = stod(bernsteinPolyApproximation(module_name, function_name2, degree_bound, strBox.c_str(), lips));
@@ -107,7 +128,16 @@ int main()
 		TaylorModel<Real> tm_u;
 		exp_u.evaluate(tm_u, initial_set.tmvPre.tms, order, initial_set.domain, setting.tm_setting.cutoff_threshold, setting.g_setting);
 
+
+
 		tm_u.remainder.bloat(err);
+/*
+Interval range_of_flowpipe;
+tm_u.intEvalNormal(range_of_flowpipe, setting.tm_setting.step_exp_table);
+
+cout << range_of_flowpipe << "\n";
+exit(0);
+*/		
 	
 		initial_set.tmvPre.tms[u_id] = tm_u;
 
@@ -130,7 +160,7 @@ int main()
 	Plot_Setting plot_setting;
 	plot_setting.setOutputDims(d_err_id, theta_err_id);
 
-	mkres = mkdir("./outputs", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
+	int mkres = mkdir("./outputs", S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH);
 	if(mkres < 0 && errno != EEXIST)
 	{
 		printf("Can not create the directory for images.\n");
