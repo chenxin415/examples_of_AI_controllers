@@ -10,17 +10,16 @@ int main()
 	// Declaration of the state variables.
 	unsigned int numVars = 3;
 
-	int d_err_id = stateVars.declareVar("d_err");
-	int theta_err_id = stateVars.declareVar("t_err");
+	int d_err_id = stateVars.declareVar("x0");
+	int theta_err_id = stateVars.declareVar("x1");
 	int u_id = stateVars.declareVar("u");
 
 	int domainDim = numVars + 1;
 
 
 	// Define the continuous dynamics.
-//	Expression_AST<Real> deriv_d_err("-sin(0.62831853071 - t_err)*0.58778525229 + cos(0.62831853071 - t_err)*0.80901699437");   // theta_r = pi/5
-	Expression_AST<Real> deriv_d_err("cos(0 - t_err)");  // theta_r = 0
-	Expression_AST<Real> deriv_theta_err("-u");
+	Expression_AST<Real> deriv_d_err("x1 - x0^3");  // theta_r = 0
+	Expression_AST<Real> deriv_theta_err("u");
 	Expression_AST<Real> deriv_u("0");
 
 	vector<Expression_AST<Real> > ode_rhs(numVars);
@@ -37,19 +36,19 @@ int main()
 	
 	Computational_Setting setting;
 
-	unsigned int order = 4;
+	unsigned int order = 5;
 
 	// stepsize and order for reachability analysis
 	setting.setFixedStepsize(0.02, order);
 
 	// time horizon for a single control step
-	setting.setTime(1);
+	setting.setTime(0.2);
 
 	// cutoff threshold
 	setting.setCutoffThreshold(1e-10);
 
 	// queue size for the symbolic remainder
-	setting.setQueueSize(200);
+	setting.setQueueSize(1000);
 
 	// print out the steps
 	setting.printOn();
@@ -59,13 +58,15 @@ int main()
 	vector<Interval> remainder_estimation(numVars, I);
 	setting.setRemainderEstimation(remainder_estimation);
 
+setting.printOff();
+
 	setting.prepare();
 
 	/*
 	 * Initial set can be a box which is represented by a vector of intervals.
 	 * The i-th component denotes the initial set of the i-th state variable.
 	 */
-	Interval init_d_err(0,0.01), init_t_err(0,0.01), init_u(0);
+	Interval init_d_err(0.7,0.9), init_t_err(0.7,0.9), init_u(0);
 	std::vector<Interval> X0;
 	X0.push_back(init_d_err);
 	X0.push_back(init_t_err);
@@ -84,21 +85,25 @@ int main()
 	Result_of_Reachability result;
 
 	// define the neural network controller
-	char const *module_name = "dubins_controller_poly_approx";
-	char const *function_name1 = "dubins_poly_controller";
+	char const *module_name = "controller_approximation_lib";
+	char const *function_name1 = "poly_approx_controller";
 	char const *function_name2 = "poly_approx_error";
-	char const *degree_bound = "[2, 2]";
-	char const *lips = "1.5391113341478";
+	char const *function_name3 = "network_lips";
+	char const *degree_bound = "[1, 1]";
+//	char const *activation = "ReLU";
+	char const *activation = "tanh";
+	char const *output_index = "0";
+	char const *neural_network = "neural_network_controller_tanh";
 	
-	double pi = 3.14159;
-	double factor = 2*pi;
+//	double pi = 3.14159;
+//	double factor = 2*pi;
 
 	// perform 20 control steps
-	for(int iter=0; iter<5; ++iter)
+	for(int iter=0; iter<20; ++iter)
 	{
 		vector<Interval> box;
 		initial_set.intEval(box, order, setting.tm_setting.cutoff_threshold);
-		
+/*		
 		if(box[1].sup() > 0)
 		{
 			for(; box[1].sup() > pi;)
@@ -115,14 +120,17 @@ int main()
 				box[1].setInf(box[1].inf() + factor);
 			}
 		}
-		
+*/		
 
 		string strBox = "[" + box[0].toString() + "," + box[1].toString() + "]";
 //cout << strBox <<endl;
-	
-		string strExpU = bernsteinPolyApproximation(module_name, function_name1, degree_bound, strBox.c_str(), lips);
-		double err = stod(bernsteinPolyApproximation(module_name, function_name2, degree_bound, strBox.c_str(), lips));
 
+		string strExpU = bernsteinPolyApproximation(module_name, function_name1, degree_bound, strBox.c_str(), activation, output_index, neural_network);
+		
+		
+		double err = stod(bernsteinPolyApproximation(module_name, function_name2, degree_bound, strBox.c_str(), activation, output_index, neural_network));
+
+printf("%e\n", err);
 		Expression_AST<Real> exp_u(strExpU);
 
 		TaylorModel<Real> tm_u;
@@ -131,16 +139,23 @@ int main()
 
 
 		tm_u.remainder.bloat(err);
-/*
-Interval range_of_flowpipe;
-tm_u.intEvalNormal(range_of_flowpipe, setting.tm_setting.step_exp_table);
 
-cout << range_of_flowpipe << "\n";
-exit(0);
-*/		
+//Interval range_of_flowpipe;
+//tm_u.intEvalNormal(range_of_flowpipe, setting.tm_setting.step_exp_table);
+
+//cout << range_of_flowpipe << "\n";
+
+		
 	
 		initial_set.tmvPre.tms[u_id] = tm_u;
+		
+/*		
+TaylorModelVec<Real> tmvTemp;
+initial_set.compose(tmvTemp, order, setting.tm_setting.cutoff_threshold);
+tmvTemp.tms[u_id].intEval(range_of_flowpipe, initial_set.domain);
 
+cout << range_of_flowpipe << "\n";
+*/
 		dynamics.reach(result, setting, initial_set, unsafeSet);
 
 		if(result.status == COMPLETED_SAFE || result.status == COMPLETED_UNSAFE || result.status == COMPLETED_UNKNOWN)
